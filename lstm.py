@@ -2,133 +2,105 @@ import torch
 import torch.nn as nn
 import numpy as np
 import pandas as pd
-from sklearn.preprocessing import MinMaxScaler
 import matplotlib.pyplot as plt
+from sklearn.preprocessing import MinMaxScaler
 
-# LSTM 모델 정의
-class LSTMModel(nn.Module):
-    def __init__(self, input_dim, hidden_dim, num_layers, output_dim):
-        super(LSTMModel, self).__init__()
-        self.hidden_dim = hidden_dim
-        self.num_layers = num_layers
-        self.lstm = nn.LSTM(input_dim, hidden_dim, num_layers, batch_first=True)
-        self.fc = nn.Linear(hidden_dim, output_dim)
+# 주가 데이터 로드
+def load_stock_data(filepath):
+    data = pd.read_csv(filepath)
+    return data
 
-    def forward(self, x):
-        h0 = torch.zeros(self.num_layers, x.size(0), self.hidden_dim).to(x.device)
-        c0 = torch.zeros(self.num_layers, x.size(0), self.hidden_dim).to(x.device)
-        out, _ = self.lstm(x, (h0, c0))
-        out = self.fc(out[:, -1, :])
-        return out
+stock_data = load_stock_data('samsung_stock_data.csv')  # csv 파일로 변경
 
-# ESG 점수 파일 읽기
-def load_esg_scores(file_name):
+# 주가 데이터 전처리
+scaler = MinMaxScaler(feature_range=(0, 1))
+stock_data['scaled_close'] = scaler.fit_transform(stock_data['Close'].values.reshape(-1, 1))
+
+# ESG 점수 로드
+def load_esg_scores(filepath):
     esg_scores = {}
-    with open(file_name, 'r') as f:
-        for line in f:
-            category, score = line.strip().split(': ')
-            esg_scores[category] = float(score)
+    with open(filepath, 'r') as file:
+        for line in file:
+            key, value = line.strip().split(': ')
+            esg_scores[key] = float(value)
     return esg_scores
 
 esg_scores = load_esg_scores('esg_scores.txt')
 
-# 주식 데이터 로드 및 전처리
-def load_stock_data(file_name):
-    stock_data = pd.read_csv(file_name, parse_dates=['date'])
-    stock_data.set_index('date', inplace=True)
-    return stock_data
+# ESG 점수를 데이터프레임으로 변환
+esg_df = pd.DataFrame([esg_scores])
+esg_values = esg_df.values[0]
 
-# 주식 데이터 파일명 및 정규화
-file_name = 'stock_prices.txt'
-stock_data = load_stock_data(file_name)
-scaler = MinMaxScaler()
-scaled_data = scaler.fit_transform(stock_data[['stock_price']].values)
+# 시퀀스 데이터 생성
+def create_sequences(data, esg_data, seq_length):
+    sequences = []
+    for i in range(len(data) - seq_length):
+        sequence = np.concatenate((data[i:i + seq_length], esg_data), axis=None)
+        label = data[i + seq_length]
+        sequences.append((sequence, label))
+    return sequences
 
-# ESG 점수를 데이터프레임에 추가
-for category, score in esg_scores.items():
-    stock_data[category] = score
+seq_length = 5
+sequences = create_sequences(stock_data['scaled_close'].values, esg_values, seq_length)
 
-# 학습 데이터 준비
-def create_dataset(data, time_step=1):
-    X, Y = [], []
-    for i in range(len(data) - time_step - 1):
-        a = data[i:(i + time_step), :]
-        X.append(a)
-        Y.append(data[i + time_step, 0])  # 주식 가격 예측
-    return np.array(X), np.array(Y)
+# LSTM 모델 정의
+class LSTMModel(nn.Module):
+    def __init__(self, input_size, hidden_size, output_size, num_layers):
+        super(LSTMModel, self).__init__()
+        self.hidden_size = hidden_size
+        self.num_layers = num_layers
+        self.lstm = nn.LSTM(input_size, hidden_size, num_layers, batch_first=True)
+        self.fc = nn.Linear(hidden_size, output_size)
 
-# 데이터셋 생성
-time_step = 1
-X, Y = create_dataset(scaled_data, time_step)
+    def forward(self, x):
+        h0 = torch.zeros(self.num_layers, x.size(0), self.hidden_size).to(x.device)
+        c0 = torch.zeros(self.num_layers, x.size(0), self.hidden_size).to(x.device)
+        out, _ = self.lstm(x, (h0, c0))
+        out = self.fc(out[:, -1, :])
+        return out
 
-# 데이터셋 분할
-train_size = int(len(X) * 0.8)
-test_size = len(X) - train_size
-X_train, X_test = X[0:train_size], X[train_size:len(X)]
-Y_train, Y_test = Y[0:train_size], Y[train_size:len(Y)]
+# 데이터 준비
+X = np.array([seq[0] for seq in sequences])
+y = np.array([seq[1] for seq in sequences])
 
-# PyTorch Dataset 및 DataLoader
-class StockDataset(torch.utils.data.Dataset):
-    def __init__(self, X, Y):
-        self.X = X
-        self.Y = Y
+X = torch.tensor(X, dtype=torch.float32)
+y = torch.tensor(y, dtype=torch.float32)
 
-    def __len__(self):
-        return len(self.X)
-
-    def __getitem__(self, idx):
-        return torch.tensor(self.X[idx], dtype=torch.float32), torch.tensor(self.Y[idx], dtype=torch.float32)
-
-# 데이터셋 생성
-train_dataset = StockDataset(X_train, Y_train)
-test_dataset = StockDataset(X_test, Y_test)
-
-# DataLoader 생성
-train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=1, shuffle=True)
-test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=1, shuffle=False)
-
-# LSTM 모델 정의 및 초기화
-input_dim = X_train.shape[2]  # 여기서 input_dim은 feature의 수를 나타냅니다.
-hidden_dim = 50
+# 모델 초기화
+input_size = X.shape[1]  # input_size 변경
+hidden_size = 50
+output_size = 1
 num_layers = 2
-output_dim = 1
-model = LSTMModel(input_dim, hidden_dim, num_layers, output_dim)
 
-# 손실 함수 및 옵티마이저
+model = LSTMModel(input_size, hidden_size, output_size, num_layers)
 criterion = nn.MSELoss()
 optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
 
 # 모델 학습
-model.train()
-for epoch in range(1):
-    for X_batch, Y_batch in train_loader:
-        outputs = model(X_batch)
-        optimizer.zero_grad()
-        loss = criterion(outputs, Y_batch)
-        loss.backward()
-        optimizer.step()
-    print(f'Epoch [{epoch+1}/1], Loss: {loss.item():.4f}')
+num_epochs = 200
+for epoch in range(num_epochs):
+    model.train()
+    outputs = model(X.unsqueeze(1))
+    optimizer.zero_grad()
+    loss = criterion(outputs, y)
+    loss.backward()
+    optimizer.step()
+    if (epoch+1) % 10 == 0:
+        print(f'Epoch [{epoch+1}/{num_epochs}], Loss: {loss.item():.4f}')
 
 # 예측
 model.eval()
-train_predict = []
-test_predict = []
-with torch.no_grad():
-    for X_batch, _ in train_loader:
-        train_predict.append(model(X_batch).item())
-    for X_batch, _ in test_loader:
-        test_predict.append(model(X_batch).item())
+predictions = model(X.unsqueeze(1)).detach().numpy()
+predictions = scaler.inverse_transform(predictions)
 
-# 예측값 역정규화
-train_predict = scaler.inverse_transform(np.array(train_predict).reshape(-1, 1))
-test_predict = scaler.inverse_transform(np.array(test_predict).reshape(-1, 1))
+# 시각화
+actual_prices = stock_data['Close'][seq_length:].values
 
-# 결과 시각화
-plt.figure(figsize=(14, 5))
-plt.plot(stock_data.index, stock_data['stock_price'], label='True Price')
-plt.plot(stock_data.index[time_step:len(train_predict)+time_step], train_predict[:,0], label='Train Predict')
-plt.plot(stock_data.index[len(train_predict)+(time_step*2)+1:len(stock_data)-1], test_predict[:,0], label='Test Predict')
-plt.xlabel('Date')
+plt.figure(figsize=(10,6))
+plt.plot(actual_prices, label='Actual Prices')
+plt.plot(predictions, label='Predicted Prices')
+plt.title('Stock Price Prediction with ESG Scores')
+plt.xlabel('Time')
 plt.ylabel('Stock Price')
 plt.legend()
 plt.show()
