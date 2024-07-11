@@ -25,7 +25,7 @@ def load_esg_scores(filepath):
             esg_scores[key] = float(value)
     return esg_scores
 
-esg_scores = load_esg_scores('esg_scores.txt')
+esg_scores = load_esg_scores('esg-analysis/esg_scores.txt')
 
 # ESG 점수를 데이터프레임으로 변환
 esg_df = pd.DataFrame([esg_scores])

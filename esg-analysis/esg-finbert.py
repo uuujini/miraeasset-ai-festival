@@ -22,7 +22,7 @@ def analyze_esg_report(report):
     return dict(zip(categories, scores[0]))
 
 # PDF 파일 경로
-pdf_path = 'SamsungESG2024.pdf'
+pdf_path = '../SamsungESG2024.pdf'
 
 # PDF에서 텍스트 추출
 report_text = extract_text_from_pdf(pdf_path)
